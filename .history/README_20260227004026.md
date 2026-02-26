@@ -1,0 +1,2 @@
+### 松井証券取引レビュー用最小動作コマンド
+python FX-R-matsui.py --csv data/execution_list_yyyymmdd.csv --encoding cp932 --outdir out --prefix exec_yyyymmdd
