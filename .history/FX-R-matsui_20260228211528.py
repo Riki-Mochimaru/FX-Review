@@ -463,7 +463,7 @@ def overlay_markers_on_ticks(ax, ticks: pd.DataFrame, trades: pd.DataFrame):
         win = bool(r["is_win"])
 
         ax.scatter([ticks["_t"].iloc[ei]], [ticks["_p"].iloc[ei]], marker="^", s=10)
-        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=10, alpha=0.9 if win else 0.35)
+        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=2, alpha=0.9 if win else 0.35)
 
 
 def _metrics_lines(metrics: dict, price_label: str, tick_label: str) -> List[str]:

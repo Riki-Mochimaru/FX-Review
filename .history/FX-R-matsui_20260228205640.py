@@ -462,8 +462,8 @@ def overlay_markers_on_ticks(ax, ticks: pd.DataFrame, trades: pd.DataFrame):
         xi = nearest_tick(pd.to_datetime(r["exit_time"]))
         win = bool(r["is_win"])
 
-        ax.scatter([ticks["_t"].iloc[ei]], [ticks["_p"].iloc[ei]], marker="^", s=10)
-        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=10, alpha=0.9 if win else 0.35)
+        ax.scatter([ticks["_t"].iloc[ei]], [ticks["_p"].iloc[ei]], marker="^", s=22)
+        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=22, alpha=0.9 if win else 0.35)
 
 
 def _metrics_lines(metrics: dict, price_label: str, tick_label: str) -> List[str]:
@@ -525,7 +525,7 @@ def make_page1_png(
         ax0.text(0.0, y, s, transform=ax0.transAxes, fontsize=9, va="top")
         y -= 0.16
 
-    ax1 = fig.add_axes([0.08, 0.43, 0.84, 0.33])
+    ax1 = fig.add_axes([0.08, 0.46, 0.84, 0.33])
     ax1.set_title("USDJPY Candles with Trade Markers")
     mpf_df = candle_plot.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
     mpf_df = mpf_df.dropna(subset=["Open", "High", "Low", "Close"])

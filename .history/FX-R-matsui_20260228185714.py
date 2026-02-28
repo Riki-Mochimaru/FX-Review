@@ -12,8 +12,6 @@ from typing import Optional, Tuple, Dict, List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import mplfinance as mpf
-import yfinance as yf
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -270,52 +268,11 @@ def load_minute_ohlc(path: Path, tz: Optional[str] = None) -> pd.DataFrame:
     return df[["_t", "open", "high", "low", "close"]].reset_index(drop=True)
 
 
-def load_ticks_optional(path: Optional[Path], tz: Optional[str], minute_ohlc: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-    """
-    If tick CSV is provided, use it.
-    Else, build pseudo-ticks from minute close.
-    Returns: (ticks_df with columns [_t, _p], label)
-    """
-    if path is None:
-        ticks = minute_ohlc[["_t", "close"]].rename(columns={"close": "_p"}).copy()
-        ticks["_p"] = pd.to_numeric(ticks["_p"], errors="coerce")
-        ticks = ticks.dropna(subset=["_t", "_p"]).reset_index(drop=True)
-        return ticks, "Pseudo ticks from minute close (no tick file)"
-
-    df = pd.read_csv(path)
-    tcol = pick_col(df, ["time", "timestamp", "datetime", "date"])
-    if tcol is None:
-        raise ValueError("Tick: missing time column (time/timestamp/datetime).")
-
-    pcol = pick_col(df, ["price", "mid", "last", "bid", "ask"])
-    if pcol is None:
-        raise ValueError("Tick: missing price column (price/mid/last/bid/ask).")
-
-    df["_t"] = pd.to_datetime(df[tcol], errors="coerce")
-    df["_p"] = pd.to_numeric(df[pcol], errors="coerce")
-    df = df.dropna(subset=["_t", "_p"]).sort_values("_t")
-
-    if tz:
-        if df["_t"].dt.tz is None:
-            df["_t"] = df["_t"].dt.tz_localize(tz)
-        else:
-            df["_t"] = df["_t"].dt.tz_convert(tz)
-
-    return df[["_t", "_p"]].reset_index(drop=True), "Real ticks"
-
-
 def _downsample_df(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
     if len(df) <= max_points:
         return df
     idx = np.linspace(0, len(df) - 1, max_points).astype(int)
     return df.iloc[idx].reset_index(drop=True)
-
-
-def _downsample_indexed_df(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
-    if len(df) <= max_points:
-        return df
-    idx = np.linspace(0, len(df) - 1, max_points).astype(int)
-    return df.iloc[idx]
 
 
 def _align_timestamp_to_tz(ts: pd.Timestamp, target_tz) -> pd.Timestamp:
@@ -331,18 +288,7 @@ def _align_timestamp_to_tz(ts: pd.Timestamp, target_tz) -> pd.Timestamp:
     return ts.tz_convert(target_tz)
 
 
-def _align_datetime_index_to_tz(idx: pd.DatetimeIndex, tz: Optional[str]) -> pd.DatetimeIndex:
-    idx = pd.to_datetime(idx, errors="coerce")
-    if tz:
-        if idx.tz is None:
-            return idx.tz_localize(tz)
-        return idx.tz_convert(tz)
-    if idx.tz is not None:
-        return idx.tz_localize(None)
-    return idx
-
-
-def _filter_time_range(df: pd.DataFrame, tcol: str, start, end) -> pd.DataFrame:
+def _filter_time_range(df: pd.DataFrame, tcol: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     series = df[tcol]
     target_tz = series.dt.tz
     start_aligned = _align_timestamp_to_tz(start, target_tz)
@@ -356,76 +302,46 @@ def compute_focus_window(trades: pd.DataFrame, pad_minutes: int) -> Tuple[pd.Tim
     return t0 - pd.Timedelta(minutes=pad_minutes), t1 + pd.Timedelta(minutes=pad_minutes)
 
 
-def fetch_usdjpy_ohlc_yf(
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    tz: Optional[str],
-    interval_preferred: str = "1m",
-) -> Tuple[pd.DataFrame, str]:
-    start_q = pd.to_datetime(start)
-    end_q = pd.to_datetime(end) + pd.Timedelta(minutes=1)
-
-    if start_q.tzinfo is not None:
-        start_q = start_q.tz_convert("UTC").tz_localize(None)
-    if end_q.tzinfo is not None:
-        end_q = end_q.tz_convert("UTC").tz_localize(None)
-
-    intervals = [interval_preferred] if interval_preferred == "5m" else [interval_preferred, "5m"]
-    last_err = None
-    ticker = yf.Ticker("JPY=X")
-
-    for iv in intervals:
-        try:
-            hist = ticker.history(start=start_q.to_pydatetime(), end=end_q.to_pydatetime(), interval=iv)
-            if hist is None or hist.empty:
-                raise ValueError("empty OHLC from yfinance")
-
-            hist = hist.rename(columns=str.lower)
-            need = ["open", "high", "low", "close"]
-            if any(c not in hist.columns for c in need):
-                raise ValueError("yfinance OHLC columns are missing")
-
-            ohlc = hist[["open", "high", "low", "close"]].copy()
-            ohlc.index = _align_datetime_index_to_tz(ohlc.index, tz)
-            ohlc = ohlc.sort_index()
-            print(f"[INFO] yfinance JPY=X fetched interval={iv}, rows={len(ohlc)}")
-            return ohlc, f"yfinance JPY=X ({iv})"
-        except Exception as e:
-            last_err = e
-            print(f"[WARN] yfinance fetch failed with interval={iv}: {e}")
-
-    raise RuntimeError(f"yfinance fetch failed for JPY=X (1m/5m): {last_err}")
-
-
-def _make_candle_ohlc_indexed(minute_ohlc: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, tz: Optional[str], max_bars: int) -> pd.DataFrame:
-    ohlc = _filter_time_range(minute_ohlc, "_t", start, end)
-    ohlc = _downsample_df(ohlc, max_bars)
-    if ohlc.empty:
-        raise ValueError("Minute OHLC is empty after focus-window filtering.")
-    out = ohlc.copy()
-    out["_t"] = pd.to_datetime(out["_t"], errors="coerce")
-    out = out.dropna(subset=["_t"]).sort_values("_t")
-    out["_t"] = _align_datetime_index_to_tz(pd.DatetimeIndex(out["_t"]), tz)
-    out = out.set_index("_t")[["open", "high", "low", "close"]]
-    return out
-
-
 # ===== Plotting =====
-def _overlay_markers_on_ohlc_index(ax, ohlc_indexed: pd.DataFrame, trades: pd.DataFrame):
-    tt = ohlc_indexed.index
-    target_tz = tt.tz
+def draw_candles(ax, ohlc: pd.DataFrame, width: float = 0.6):
+    x = np.arange(len(ohlc))
+    o = ohlc["open"].to_numpy()
+    h = ohlc["high"].to_numpy()
+    l = ohlc["low"].to_numpy()
+    c = ohlc["close"].to_numpy()
+
+    for i in range(len(ohlc)):
+        ax.vlines(x[i], l[i], h[i], linewidth=1)
+        y0 = min(o[i], c[i])
+        height = abs(c[i] - o[i])
+        if height == 0:
+            height = 1e-9
+        rect = plt.Rectangle((x[i] - width / 2, y0), width, height)
+        ax.add_patch(rect)
+
+    ax.set_xlim(-1, len(ohlc))
+    ticks = np.linspace(0, len(ohlc) - 1, 6).astype(int)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([ohlc["_t"].iloc[i].strftime("%m-%d %H:%M") for i in ticks])
+    ax.grid(True, alpha=0.3)
+
+
+def overlay_markers_on_minute(ax, ohlc: pd.DataFrame, trades: pd.DataFrame):
+    t = ohlc["_t"]
+    target_tz = t.dt.tz
 
     def nearest_idx(ts: pd.Timestamp) -> int:
         ts = _align_timestamp_to_tz(ts, target_tz)
-        i = tt.searchsorted(ts)
+        i = t.searchsorted(ts)
         if i <= 0:
             return 0
-        if i >= len(tt):
-            return len(tt) - 1
-        prev = tt[i - 1]
-        nxt = tt[i]
+        if i >= len(t):
+            return len(t) - 1
+        prev = t.iloc[i - 1]
+        nxt = t.iloc[i]
         return (i - 1) if abs((ts - prev).total_seconds()) <= abs((nxt - ts).total_seconds()) else i
 
+    x = np.arange(len(ohlc))
     for _, r in trades.iterrows():
         ei = nearest_idx(pd.to_datetime(r["entry_time"]))
         xi = nearest_idx(pd.to_datetime(r["exit_time"]))
@@ -434,39 +350,15 @@ def _overlay_markers_on_ohlc_index(ax, ohlc_indexed: pd.DataFrame, trades: pd.Da
         win = bool(r["is_win"])
 
         if pd.isna(ep):
-            ep = float(ohlc_indexed["close"].iloc[ei])
+            ep = float(ohlc["close"].iloc[ei])
         if pd.isna(xp):
-            xp = float(ohlc_indexed["close"].iloc[xi])
+            xp = float(ohlc["close"].iloc[xi])
 
-        ax.scatter([tt[ei]], [ep], marker="^", s=2)
-        ax.scatter([tt[xi]], [xp], marker="o", s=2, alpha=0.9 if win else 0.35)
-
-
-def overlay_markers_on_ticks(ax, ticks: pd.DataFrame, trades: pd.DataFrame):
-    tt = ticks["_t"]
-
-    def nearest_tick(ts: pd.Timestamp) -> int:
-        target_tz = tt.dt.tz
-        ts = _align_timestamp_to_tz(ts, target_tz)
-        i = tt.searchsorted(ts)
-        if i <= 0:
-            return 0
-        if i >= len(tt):
-            return len(tt) - 1
-        prev = tt.iloc[i - 1]
-        nxt = tt.iloc[i]
-        return (i - 1) if abs((ts - prev).total_seconds()) <= abs((nxt - ts).total_seconds()) else i
-
-    for _, r in trades.iterrows():
-        ei = nearest_tick(pd.to_datetime(r["entry_time"]))
-        xi = nearest_tick(pd.to_datetime(r["exit_time"]))
-        win = bool(r["is_win"])
-
-        ax.scatter([ticks["_t"].iloc[ei]], [ticks["_p"].iloc[ei]], marker="^", s=10)
-        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=10, alpha=0.9 if win else 0.35)
+        ax.scatter([x[ei]], [ep], marker="^", s=28)
+        ax.scatter([x[xi]], [xp], marker="o", s=28, alpha=0.9 if win else 0.35)
 
 
-def _metrics_lines(metrics: dict, price_label: str, tick_label: str) -> List[str]:
+def _metrics_lines(metrics: dict) -> List[str]:
     def fmt_pct(x: float) -> str:
         return "NaN" if (x is None or (isinstance(x, float) and math.isnan(x))) else f"{x*100:.2f}%"
 
@@ -479,41 +371,14 @@ def _metrics_lines(metrics: dict, price_label: str, tick_label: str) -> List[str
         f"Avg win: {fmt_num(metrics['avg_win'])} JPY    Avg loss: {fmt_num(metrics['avg_loss'])} JPY    Expectancy: {fmt_num(metrics['expectancy'])} JPY/trade",
         f"Max drawdown: {fmt_num(metrics['max_drawdown'])} JPY    Best: {fmt_num(metrics['best_trade'])}    Worst: {fmt_num(metrics['worst_trade'])}",
         f"Max win streak: {metrics['max_win_streak']}    Max loss streak: {metrics['max_loss_streak']}    Trades/day: {fmt_num(metrics['trades_per_day'])}",
-        f"Price source: {price_label}",
-        f"Tick source: {tick_label}",
+        "Price source: minute OHLC",
         "Markers: entry=triangle, exit=circle (exit opacity indicates win/loss).",
     ]
 
 
-def _bollinger_bands(close: pd.Series, window: int = 20) -> pd.DataFrame:
-    ma = close.rolling(window=window, min_periods=window).mean()
-    sd = close.rolling(window=window, min_periods=window).std(ddof=0)
-    return pd.DataFrame({
-        "bb_u2": ma + 2.0 * sd,
-        "bb_l2": ma - 2.0 * sd,
-        "bb_u3": ma + 3.0 * sd,
-        "bb_l3": ma - 3.0 * sd,
-    }, index=close.index)
-
-
-def make_page1_png(
-    metrics: dict,
-    trades: pd.DataFrame,
-    candle_ohlc: pd.DataFrame,
-    price_label: str,
-    tick_label: str,
-    out_png: Path,
-    start: Optional[pd.Timestamp] = None,
-    end: Optional[pd.Timestamp] = None,
-):
+def make_page1_png(metrics: dict, trades: pd.DataFrame, ohlc: pd.DataFrame, out_png: Path):
     pnl = trades["pnl"].astype(float).to_numpy()
     equity = np.cumsum(pnl)
-    # mplfinance is more reliable with tz-naive DatetimeIndex for candle rendering.
-    candle_plot = candle_ohlc.copy()
-    if candle_plot.index.tz is not None:
-        candle_plot.index = candle_plot.index.tz_localize(None)
-    target_tz = candle_plot.index.tz
-    exit_time = pd.to_datetime(trades["exit_time"]).map(lambda ts: _align_timestamp_to_tz(ts, target_tz))
 
     fig = plt.figure(figsize=(8.27, 11.69))
     fig.suptitle("Trade Report (Page 1/2)", fontsize=14)
@@ -521,36 +386,22 @@ def make_page1_png(
     ax0 = fig.add_axes([0.08, 0.83, 0.84, 0.13])
     ax0.axis("off")
     y = 0.95
-    for s in _metrics_lines(metrics, price_label, tick_label):
+    for s in _metrics_lines(metrics):
         ax0.text(0.0, y, s, transform=ax0.transAxes, fontsize=9, va="top")
         y -= 0.16
 
-    ax1 = fig.add_axes([0.08, 0.43, 0.84, 0.33])
-    ax1.set_title("USDJPY Candles with Trade Markers")
-    mpf_df = candle_plot.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
-    mpf_df = mpf_df.dropna(subset=["Open", "High", "Low", "Close"])
-    print(f"[INFO] page1 candle bars={len(mpf_df)}")
-    mpf.plot(
-        mpf_df,
-        type="candle",
-        style="yahoo",
-        volume=False,
-        show_nontrading=True,
-        ax=ax1,
-    )
-    bb = _bollinger_bands(candle_plot["close"], window=20)
-    ax1.plot(bb.index, bb["bb_u2"], color="tab:blue", linestyle="--", linewidth=1.0, alpha=0.8, label="BB +2σ")
-    ax1.plot(bb.index, bb["bb_l2"], color="tab:blue", linestyle="--", linewidth=1.0, alpha=0.8, label="BB -2σ")
-    ax1.plot(bb.index, bb["bb_u3"], color="tab:red", linewidth=0.9, alpha=0.8, label="BB +3σ")
-    ax1.plot(bb.index, bb["bb_l3"], color="tab:red", linewidth=0.9, alpha=0.8, label="BB -3σ")
-    _overlay_markers_on_ohlc_index(ax1, candle_plot, trades)
-    ax1.set_ylabel("Price")
-    ax1.tick_params(axis="x", labelbottom=False)
-    ax1.legend(loc="upper left", fontsize=8, frameon=False)
 
-    ax2 = fig.add_axes([0.08, 0.10, 0.84, 0.28], sharex=ax1)
+    ax1 = fig.add_axes([0.08, 0.46, 0.84, 0.33])
+    ax1.set_title("Minute Candles with Trade Markers")
+    ax1.setxlim()
+    draw_candles(ax1, ohlc)
+    overlay_markers_on_minute(ax1, ohlc, trades)
+    ax1.plot(pd.to)
+    ax1.set_ylabel("Price")
+
+    ax2 = fig.add_axes([0.08, 0.10, 0.84, 0.28])
     ax2.set_title("Equity Curve (Cumulative P&L)")
-    ax2.plot(exit_time, equity)
+    ax2.plot(pd.to_datetime(trades["exit_time"]), equity)
     ax2.set_ylabel("JPY")
     ax2.grid(True, alpha=0.3)
 
@@ -558,7 +409,7 @@ def make_page1_png(
     plt.close(fig)
 
 
-def make_page2_png(metrics: dict, price_label: str, tick_label: str, trades: pd.DataFrame, ticks: pd.DataFrame, out_png: Path):
+def make_page2_png(metrics: dict, trades: pd.DataFrame, ohlc: pd.DataFrame, out_png: Path):
     pnl = trades["pnl"].astype(float).to_numpy()
     hold = trades["hold_minutes"].astype(float).to_numpy()
     is_win = trades["is_win"].astype(bool).to_numpy()
@@ -573,16 +424,9 @@ def make_page2_png(metrics: dict, price_label: str, tick_label: str, trades: pd.
     ax0 = fig.add_axes([0.08, 0.83, 0.84, 0.13])
     ax0.axis("off")
     y = 0.95
-    for s in _metrics_lines(metrics, price_label, tick_label):
+    for s in _metrics_lines(metrics):
         ax0.text(0.0, y, s, transform=ax0.transAxes, fontsize=9, va="top")
         y -= 0.16
-
-    ax1 = fig.add_axes([0.08, 0.46, 0.84, 0.33])
-    ax1.set_title("Tick Price with Trade Markers")
-    ax1.plot(ticks["_t"], ticks["_p"])
-    overlay_markers_on_ticks(ax1, ticks, trades)
-    ax1.set_ylabel("Price")
-    ax1.grid(True, alpha=0.3)
 
     ax2 = fig.add_axes([0.08, 0.28, 0.84, 0.14])
     ax2.set_title("Drawdown")
@@ -628,11 +472,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--execution_csv", type=str, required=True)
     ap.add_argument("--execution_encoding", type=str, default="UTF-8")
+    ap.add_argument("--minute_csv", type=str, required=True)
 
     ap.add_argument("--tz", type=str, default=None)
     ap.add_argument("--pad_minutes", type=int, default=60)
     ap.add_argument("--max_minute_bars", type=int, default=4000)
-    ap.add_argument("--max_ticks", type=int, default=60000)
 
     ap.add_argument("--outdir", type=str, default="out_report")
     ap.add_argument("--prefix", type=str, default="overlay_report")
@@ -642,35 +486,16 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     trades = reconstruct_trades_from_matsui(Path(args.execution_csv), encoding=args.execution_encoding)
-    if args.tz:
-        trades = apply_timezone_to_trades(trades, args.tz)
     metrics = compute_metrics(trades)
 
-    # Render traded time window with optional padding
+    ohlc = load_minute_ohlc(Path(args.minute_csv), tz=args.tz)
+
+    # Focus around trades
     start, end = compute_focus_window(trades, pad_minutes=args.pad_minutes)
+    ohlc = _filter_time_range(ohlc, "_t", start, end)
 
-    try:
-        candle_ohlc, price_label = fetch_usdjpy_ohlc_yf(start, end, args.tz, interval_preferred="1m")
-        candle_ohlc = candle_ohlc[(candle_ohlc.index >= _align_timestamp_to_tz(start, candle_ohlc.index.tz)) &
-                                  (candle_ohlc.index <= _align_timestamp_to_tz(end, candle_ohlc.index.tz))]
-        if candle_ohlc.empty:
-            raise ValueError("yfinance OHLC is empty in focus window")
-        candle_ohlc = _downsample_indexed_df(candle_ohlc, args.max_minute_bars)
-    except Exception as e:
-        print(f"[ERROR] yfinance fetch failed. report generation aborted: {e}")
-        return
-
-    if candle_ohlc.empty:
-        raise ValueError("Candle OHLC is empty in the focus window.")
-
-    tick_label = "Pseudo ticks from yfinance close"
-    idx_name = candle_ohlc.index.name or "_t"
-    ticks = (
-        candle_ohlc.reset_index()
-        .rename(columns={idx_name: "_t", "close": "_p"})[["_t", "_p"]]
-        .copy()
-    )
-    ticks = _downsample_df(ticks, args.max_ticks)
+    # Downsample
+    ohlc = _downsample_df(ohlc, args.max_minute_bars)
 
     # Save reconstructed trades
     trades_out = outdir / f"{args.prefix}_trades.csv"
@@ -679,8 +504,8 @@ def main():
     # PNG pages define the exact report content
     p1 = outdir / f"{args.prefix}_page1.png"
     p2 = outdir / f"{args.prefix}_page2.png"
-    make_page1_png(metrics, trades, candle_ohlc, price_label, tick_label, p1, start=start, end=end)
-    make_page2_png(metrics, price_label, tick_label, trades, ticks, p2)
+    make_page1_png(metrics, trades, ohlc, p1)
+    make_page2_png(metrics, trades, ohlc, p2)
 
     # PDF == PNG pages
     pdf_out = outdir / f"{args.prefix}.pdf"

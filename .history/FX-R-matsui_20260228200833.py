@@ -438,8 +438,8 @@ def _overlay_markers_on_ohlc_index(ax, ohlc_indexed: pd.DataFrame, trades: pd.Da
         if pd.isna(xp):
             xp = float(ohlc_indexed["close"].iloc[xi])
 
-        ax.scatter([tt[ei]], [ep], marker="^", s=2)
-        ax.scatter([tt[xi]], [xp], marker="o", s=2, alpha=0.9 if win else 0.35)
+        ax.scatter([tt[ei]], [ep], marker="^", s=28)
+        ax.scatter([tt[xi]], [xp], marker="o", s=28, alpha=0.9 if win else 0.35)
 
 
 def overlay_markers_on_ticks(ax, ticks: pd.DataFrame, trades: pd.DataFrame):
@@ -462,8 +462,8 @@ def overlay_markers_on_ticks(ax, ticks: pd.DataFrame, trades: pd.DataFrame):
         xi = nearest_tick(pd.to_datetime(r["exit_time"]))
         win = bool(r["is_win"])
 
-        ax.scatter([ticks["_t"].iloc[ei]], [ticks["_p"].iloc[ei]], marker="^", s=10)
-        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=10, alpha=0.9 if win else 0.35)
+        ax.scatter([ticks["_t"].iloc[ei]], [ticks["_p"].iloc[ei]], marker="^", s=22)
+        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=22, alpha=0.9 if win else 0.35)
 
 
 def _metrics_lines(metrics: dict, price_label: str, tick_label: str) -> List[str]:
@@ -508,11 +508,7 @@ def make_page1_png(
 ):
     pnl = trades["pnl"].astype(float).to_numpy()
     equity = np.cumsum(pnl)
-    # mplfinance is more reliable with tz-naive DatetimeIndex for candle rendering.
-    candle_plot = candle_ohlc.copy()
-    if candle_plot.index.tz is not None:
-        candle_plot.index = candle_plot.index.tz_localize(None)
-    target_tz = candle_plot.index.tz
+    target_tz = candle_ohlc.index.tz
     exit_time = pd.to_datetime(trades["exit_time"]).map(lambda ts: _align_timestamp_to_tz(ts, target_tz))
 
     fig = plt.figure(figsize=(8.27, 11.69))
@@ -525,25 +521,27 @@ def make_page1_png(
         ax0.text(0.0, y, s, transform=ax0.transAxes, fontsize=9, va="top")
         y -= 0.16
 
-    ax1 = fig.add_axes([0.08, 0.43, 0.84, 0.33])
+    ax1 = fig.add_axes([0.08, 0.46, 0.84, 0.33])
     ax1.set_title("USDJPY Candles with Trade Markers")
-    mpf_df = candle_plot.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
-    mpf_df = mpf_df.dropna(subset=["Open", "High", "Low", "Close"])
-    print(f"[INFO] page1 candle bars={len(mpf_df)}")
+    mpf_df = candle_ohlc.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
     mpf.plot(
         mpf_df,
         type="candle",
-        style="yahoo",
+        style="default",
         volume=False,
         show_nontrading=True,
         ax=ax1,
     )
-    bb = _bollinger_bands(candle_plot["close"], window=20)
+    bb = _bollinger_bands(candle_ohlc["close"], window=20)
     ax1.plot(bb.index, bb["bb_u2"], color="tab:blue", linestyle="--", linewidth=1.0, alpha=0.8, label="BB +2σ")
-    ax1.plot(bb.index, bb["bb_l2"], color="tab:blue", linestyle="--", linewidth=1.0, alpha=0.8, label="BB -2σ")
+    ax1.plot(bb.index, bb["bb_l2"], color="tab:blue", linewidth=1.0, alpha=0.8, label="BB -2σ")
     ax1.plot(bb.index, bb["bb_u3"], color="tab:red", linewidth=0.9, alpha=0.8, label="BB +3σ")
     ax1.plot(bb.index, bb["bb_l3"], color="tab:red", linewidth=0.9, alpha=0.8, label="BB -3σ")
-    _overlay_markers_on_ohlc_index(ax1, candle_plot, trades)
+    _overlay_markers_on_ohlc_index(ax1, candle_ohlc, trades)
+    if start is not None and end is not None:
+        start_aligned = _align_timestamp_to_tz(start, target_tz)
+        end_aligned = _align_timestamp_to_tz(end, target_tz)
+        ax1.set_xlim(start_aligned, end_aligned)
     ax1.set_ylabel("Price")
     ax1.tick_params(axis="x", labelbottom=False)
     ax1.legend(loc="upper left", fontsize=8, frameon=False)
@@ -551,6 +549,10 @@ def make_page1_png(
     ax2 = fig.add_axes([0.08, 0.10, 0.84, 0.28], sharex=ax1)
     ax2.set_title("Equity Curve (Cumulative P&L)")
     ax2.plot(exit_time, equity)
+    if start is not None and end is not None:
+        start_aligned = _align_timestamp_to_tz(start, target_tz)
+        end_aligned = _align_timestamp_to_tz(end, target_tz)
+        ax2.set_xlim(start_aligned, end_aligned)
     ax2.set_ylabel("JPY")
     ax2.grid(True, alpha=0.3)
 
