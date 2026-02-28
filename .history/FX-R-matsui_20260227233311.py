@@ -19,7 +19,7 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 
 
-# ===== Matsui execution list (Japanese columns; never rendered as text) =====
+# ===== Matsui execution list (Japanese columns, but we never render Japanese text) =====
 COL_SYMBOL = "通貨ペア"
 COL_SIDE = "売買"
 COL_OPEN_CLOSE = "取引区分"
@@ -51,17 +51,6 @@ def to_float(x) -> float:
     except ValueError:
         return float("nan")
 
-def apply_timezone_to_trades(trades: pd.DataFrame, tz: str) -> pd.DataFrame:
-    trades = trades.copy()
-    for col in ["entry_time", "exit_time"]:
-        t = pd.to_datetime(trades[col], errors="coerce")
-        # if naive -> localize, if aware -> convert
-        if getattr(t.dt, "tz", None) is None:
-            t = t.dt.tz_localize(tz)
-        else:
-            t = t.dt.tz_convert(tz)
-        trades[col] = t
-    return trades
 
 def to_time(x) -> pd.Timestamp:
     return pd.to_datetime(x, errors="coerce")
@@ -74,8 +63,7 @@ def pick_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     return None
 
 
-# ===== Trade reconstruction (FIFO) =====
-def reconstruct_trades_from_matsui(csv_path: Path, encoding: str = "UTF-8") -> pd.DataFrame:
+def reconstruct_trades_from_matsui(csv_path: Path, encoding: str = "cp932") -> pd.DataFrame:
     df = pd.read_csv(csv_path, encoding=encoding)
     required = [COL_SYMBOL, COL_SIDE, COL_OPEN_CLOSE, COL_QTY, COL_PRICE, COL_TIME]
     missing = [c for c in required if c not in df.columns]
@@ -87,7 +75,6 @@ def reconstruct_trades_from_matsui(csv_path: Path, encoding: str = "UTF-8") -> p
     df["_qty"] = df[COL_QTY].map(to_float)
     df["_price"] = df[COL_PRICE].map(to_float)
 
-    # Row-level P&L source
     if COL_PNL_PRIMARY in df.columns:
         df["_pnl_row"] = df[COL_PNL_PRIMARY].map(to_float)
     else:
@@ -125,7 +112,6 @@ def reconstruct_trades_from_matsui(csv_path: Path, encoding: str = "UTF-8") -> p
         if oc != "決済":
             continue
 
-        # side == "売" closes LONG, side == "買" closes SHORT
         close_dir = "LONG" if side == "売" else "SHORT"
         fifo = opens.get((symbol, close_dir), [])
 
@@ -169,7 +155,6 @@ def reconstruct_trades_from_matsui(csv_path: Path, encoding: str = "UTF-8") -> p
     return trades
 
 
-# ===== Metrics =====
 def compute_metrics(trades: pd.DataFrame) -> dict:
     pnl = trades["pnl"].astype(float)
     wins = trades[trades["is_win"]]
@@ -233,7 +218,6 @@ def compute_metrics(trades: pd.DataFrame) -> dict:
     }
 
 
-# ===== Price data loading =====
 def load_minute_ohlc(path: Path, tz: Optional[str] = None) -> pd.DataFrame:
     df = pd.read_csv(path)
     tcol = pick_col(df, ["time", "timestamp", "datetime", "date"])
@@ -268,6 +252,29 @@ def load_minute_ohlc(path: Path, tz: Optional[str] = None) -> pd.DataFrame:
     return df[["_t", "open", "high", "low", "close"]].reset_index(drop=True)
 
 
+def load_ticks(path: Path, tz: Optional[str] = None) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    tcol = pick_col(df, ["time", "timestamp", "datetime", "date"])
+    if tcol is None:
+        raise ValueError("Tick: missing time column (time/timestamp/datetime).")
+
+    pcol = pick_col(df, ["price", "mid", "last", "bid", "ask"])
+    if pcol is None:
+        raise ValueError("Tick: missing price column (price/mid/last/bid/ask).")
+
+    df["_t"] = pd.to_datetime(df[tcol], errors="coerce")
+    df["_p"] = pd.to_numeric(df[pcol], errors="coerce")
+    df = df.dropna(subset=["_t", "_p"]).sort_values("_t")
+
+    if tz:
+        if df["_t"].dt.tz is None:
+            df["_t"] = df["_t"].dt.tz_localize(tz)
+        else:
+            df["_t"] = df["_t"].dt.tz_convert(tz)
+
+    return df[["_t", "_p"]].reset_index(drop=True)
+
+
 def _downsample_df(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
     if len(df) <= max_points:
         return df
@@ -275,34 +282,18 @@ def _downsample_df(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
     return df.iloc[idx].reset_index(drop=True)
 
 
-def _align_timestamp_to_tz(ts: pd.Timestamp, target_tz) -> pd.Timestamp:
-    ts = pd.to_datetime(ts, errors="coerce")
-    if pd.isna(ts):
-        return ts
-
-    if target_tz is None:
-        return ts.tz_localize(None) if ts.tzinfo is not None else ts
-
-    if ts.tzinfo is None:
-        return ts.tz_localize(target_tz)
-    return ts.tz_convert(target_tz)
-
-
 def _filter_time_range(df: pd.DataFrame, tcol: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    series = df[tcol]
-    target_tz = series.dt.tz
-    start_aligned = _align_timestamp_to_tz(start, target_tz)
-    end_aligned = _align_timestamp_to_tz(end, target_tz)
-    return df[(series >= start_aligned) & (series <= end_aligned)].reset_index(drop=True)
+    return df[(df[tcol] >= start) & (df[tcol] <= end)].reset_index(drop=True)
 
 
 def compute_focus_window(trades: pd.DataFrame, pad_minutes: int) -> Tuple[pd.Timestamp, pd.Timestamp]:
     t0 = pd.to_datetime(trades["entry_time"]).min()
     t1 = pd.to_datetime(trades["exit_time"]).max()
-    return t0 - pd.Timedelta(minutes=pad_minutes), t1 + pd.Timedelta(minutes=pad_minutes)
+    start = t0 - pd.Timedelta(minutes=pad_minutes)
+    end = t1 + pd.Timedelta(minutes=pad_minutes)
+    return start, end
 
 
-# ===== Plotting =====
 def draw_candles(ax, ohlc: pd.DataFrame, width: float = 0.6):
     x = np.arange(len(ohlc))
     o = ohlc["open"].to_numpy()
@@ -328,10 +319,8 @@ def draw_candles(ax, ohlc: pd.DataFrame, width: float = 0.6):
 
 def overlay_markers_on_minute(ax, ohlc: pd.DataFrame, trades: pd.DataFrame):
     t = ohlc["_t"]
-    target_tz = t.dt.tz
 
     def nearest_idx(ts: pd.Timestamp) -> int:
-        ts = _align_timestamp_to_tz(ts, target_tz)
         i = t.searchsorted(ts)
         if i <= 0:
             return 0
@@ -358,6 +347,28 @@ def overlay_markers_on_minute(ax, ohlc: pd.DataFrame, trades: pd.DataFrame):
         ax.scatter([x[xi]], [xp], marker="o", s=28, alpha=0.9 if win else 0.35)
 
 
+def overlay_markers_on_ticks(ax, ticks: pd.DataFrame, trades: pd.DataFrame):
+    tt = ticks["_t"]
+
+    def nearest_tick(ts: pd.Timestamp) -> int:
+        i = tt.searchsorted(ts)
+        if i <= 0:
+            return 0
+        if i >= len(tt):
+            return len(tt) - 1
+        prev = tt.iloc[i - 1]
+        nxt = tt.iloc[i]
+        return (i - 1) if abs((ts - prev).total_seconds()) <= abs((nxt - ts).total_seconds()) else i
+
+    for _, r in trades.iterrows():
+        ei = nearest_tick(pd.to_datetime(r["entry_time"]))
+        xi = nearest_tick(pd.to_datetime(r["exit_time"]))
+        win = bool(r["is_win"])
+
+        ax.scatter([ticks["_t"].iloc[ei]], [ticks["_p"].iloc[ei]], marker="^", s=22)
+        ax.scatter([ticks["_t"].iloc[xi]], [ticks["_p"].iloc[xi]], marker="o", s=22, alpha=0.9 if win else 0.35)
+
+
 def _metrics_lines(metrics: dict) -> List[str]:
     def fmt_pct(x: float) -> str:
         return "NaN" if (x is None or (isinstance(x, float) and math.isnan(x))) else f"{x*100:.2f}%"
@@ -371,7 +382,6 @@ def _metrics_lines(metrics: dict) -> List[str]:
         f"Avg win: {fmt_num(metrics['avg_win'])} JPY    Avg loss: {fmt_num(metrics['avg_loss'])} JPY    Expectancy: {fmt_num(metrics['expectancy'])} JPY/trade",
         f"Max drawdown: {fmt_num(metrics['max_drawdown'])} JPY    Best: {fmt_num(metrics['best_trade'])}    Worst: {fmt_num(metrics['worst_trade'])}",
         f"Max win streak: {metrics['max_win_streak']}    Max loss streak: {metrics['max_loss_streak']}    Trades/day: {fmt_num(metrics['trades_per_day'])}",
-        "Price source: minute OHLC",
         "Markers: entry=triangle, exit=circle (exit opacity indicates win/loss).",
     ]
 
@@ -388,7 +398,7 @@ def make_page1_png(metrics: dict, trades: pd.DataFrame, ohlc: pd.DataFrame, out_
     y = 0.95
     for s in _metrics_lines(metrics):
         ax0.text(0.0, y, s, transform=ax0.transAxes, fontsize=9, va="top")
-        y -= 0.16
+        y -= 0.18
 
     ax1 = fig.add_axes([0.08, 0.46, 0.84, 0.33])
     ax1.set_title("Minute Candles with Trade Markers")
@@ -406,7 +416,7 @@ def make_page1_png(metrics: dict, trades: pd.DataFrame, ohlc: pd.DataFrame, out_
     plt.close(fig)
 
 
-def make_page2_png(metrics: dict, trades: pd.DataFrame, ohlc: pd.DataFrame, out_png: Path):
+def make_page2_png(metrics: dict, trades: pd.DataFrame, ticks: pd.DataFrame, out_png: Path):
     pnl = trades["pnl"].astype(float).to_numpy()
     hold = trades["hold_minutes"].astype(float).to_numpy()
     is_win = trades["is_win"].astype(bool).to_numpy()
@@ -423,12 +433,12 @@ def make_page2_png(metrics: dict, trades: pd.DataFrame, ohlc: pd.DataFrame, out_
     y = 0.95
     for s in _metrics_lines(metrics):
         ax0.text(0.0, y, s, transform=ax0.transAxes, fontsize=9, va="top")
-        y -= 0.16
+        y -= 0.18
 
     ax1 = fig.add_axes([0.08, 0.46, 0.84, 0.33])
-    ax1.set_title("Minute Close Price with Trade Markers")
-    ax1.plot(ohlc["_t"], ohlc["close"])
-    overlay_markers_on_minute(ax1, ohlc, trades)
+    ax1.set_title("Tick Price with Trade Markers")
+    ax1.plot(ticks["_t"], ticks["_p"])
+    overlay_markers_on_ticks(ax1, ticks, trades)
     ax1.set_ylabel("Price")
     ax1.grid(True, alpha=0.3)
 
@@ -469,18 +479,21 @@ def make_pdf_from_pngs(pngs: List[Path], out_pdf: Path):
         img_h = h - 2 * margin
         c.drawImage(img, margin, margin, width=img_w, height=img_h, preserveAspectRatio=True, anchor="sw")
         c.showPage()
+
     c.save()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--execution_csv", type=str, required=True)
-    ap.add_argument("--execution_encoding", type=str, default="UTF-8")
+    ap.add_argument("--execution_encoding", type=str, default="cp932")
     ap.add_argument("--minute_csv", type=str, required=True)
-
+    ap.add_argument("--tick_csv", type=str, required=True)
     ap.add_argument("--tz", type=str, default=None)
-    ap.add_argument("--pad_minutes", type=int, default=60)
-    ap.add_argument("--max_minute_bars", type=int, default=4000)
+
+    ap.add_argument("--pad_minutes", type=int, default=60, help="Time window padding around trades")
+    ap.add_argument("--max_minute_bars", type=int, default=4000, help="Downsample minute bars if too many")
+    ap.add_argument("--max_ticks", type=int, default=60000, help="Downsample ticks if too many")
 
     ap.add_argument("--outdir", type=str, default="out_report")
     ap.add_argument("--prefix", type=str, default="overlay_report")
@@ -493,25 +506,28 @@ def main():
     metrics = compute_metrics(trades)
 
     ohlc = load_minute_ohlc(Path(args.minute_csv), tz=args.tz)
+    ticks = load_ticks(Path(args.tick_csv), tz=args.tz)
 
-    # Focus around trades
+    # Focus window around trades to keep plots readable
     start, end = compute_focus_window(trades, pad_minutes=args.pad_minutes)
     ohlc = _filter_time_range(ohlc, "_t", start, end)
+    ticks = _filter_time_range(ticks, "_t", start, end)
 
-    # Downsample
+    # Downsample for plotting if needed
     ohlc = _downsample_df(ohlc, args.max_minute_bars)
+    ticks = _downsample_df(ticks, args.max_ticks)
 
     # Save reconstructed trades
     trades_out = outdir / f"{args.prefix}_trades.csv"
     trades.to_csv(trades_out, index=False, encoding="utf-8")
 
-    # PNG pages define the exact report content
+    # Page PNGs (these define the exact content)
     p1 = outdir / f"{args.prefix}_page1.png"
     p2 = outdir / f"{args.prefix}_page2.png"
     make_page1_png(metrics, trades, ohlc, p1)
-    make_page2_png(metrics, trades, ohlc, p2)
+    make_page2_png(metrics, trades, ticks, p2)
 
-    # PDF == PNG pages
+    # PDF: embed the PNGs, so PDF == PNG
     pdf_out = outdir / f"{args.prefix}.pdf"
     make_pdf_from_pngs([p1, p2], pdf_out)
 

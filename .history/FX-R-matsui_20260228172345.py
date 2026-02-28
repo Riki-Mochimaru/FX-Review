@@ -475,7 +475,7 @@ def make_pdf_from_pngs(pngs: List[Path], out_pdf: Path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--execution_csv", type=str, required=True)
-    ap.add_argument("--execution_encoding", type=str, default="UTF-8")
+    ap.add_argument("--execution_encoding", type=str, default="cp932")
     ap.add_argument("--minute_csv", type=str, required=True)
 
     ap.add_argument("--tz", type=str, default=None)
