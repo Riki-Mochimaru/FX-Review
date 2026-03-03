@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import math
-from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
@@ -207,11 +206,7 @@ def _fit_quantile_regression_irls(
     return float(beta[0]), float(beta[1])
 
 
-def compute_metrics(
-    trades: pd.DataFrame,
-    qreg_hold_min: Optional[float] = None,
-    qreg_hold_max: Optional[float] = None,
-) -> dict:
+def compute_metrics(trades: pd.DataFrame) -> dict:
     pnl = trades["pnl"].astype(float)
     hold_arr = trades["hold_minutes"].astype(float).to_numpy()
     pnl_arr = pnl.to_numpy()
@@ -255,18 +250,11 @@ def compute_metrics(
     t = pd.to_datetime(trades["exit_time"])
     days = max(1, (t.max().normalize() - t.min().normalize()).days + 1)
     trades_per_day = float(len(trades) / days)
-    qreg_mask = np.isfinite(hold_arr) & np.isfinite(pnl_arr)
-    if qreg_hold_min is not None:
-        qreg_mask &= hold_arr >= float(qreg_hold_min)
-    if qreg_hold_max is not None:
-        qreg_mask &= hold_arr <= float(qreg_hold_max)
-    hold_qreg = hold_arr[qreg_mask]
-    pnl_qreg = pnl_arr[qreg_mask]
-    hold_median_min = float(np.nanmedian(hold_qreg)) if len(hold_qreg) else float("nan")
+    hold_median_min = float(np.nanmedian(hold_arr)) if len(hold_arr) else float("nan")
 
     qreg = {}
-    for q in (0.10, 0.50, 0.90):
-        b0, b1 = _fit_quantile_regression_irls(hold_qreg, pnl_qreg, q)
+    for q in (0.10, 0.50, 0.75):
+        b0, b1 = _fit_quantile_regression_irls(hold_arr, pnl_arr, q)
         qk = f"{int(q * 100):02d}"
         qreg[f"qreg_pnl_hold_q{qk}_intercept"] = b0
         qreg[f"qreg_pnl_hold_q{qk}_slope"] = b1
@@ -291,9 +279,6 @@ def compute_metrics(
         "trades_per_day": trades_per_day,
         "corr_hold_pnl": corr_hold_pnl,
         "qreg_hold_median_min": hold_median_min,
-        "qreg_hold_min": float(qreg_hold_min) if qreg_hold_min is not None else float("nan"),
-        "qreg_hold_max": float(qreg_hold_max) if qreg_hold_max is not None else float("nan"),
-        "qreg_n": int(len(hold_qreg)),
         **qreg,
     }
 
@@ -543,19 +528,15 @@ def _metrics_lines(metrics: dict, price_label: str, tick_label: str) -> List[str
         f"Corr(hold,pnl): {fmt_num(metrics['corr_hold_pnl'])}",
         (
             "QReg slope pnl~hold (JPY/min): "
-            f"q10={fmt_num(metrics['qreg_pnl_hold_q10_slope'])}  "
+            f"q25={fmt_num(metrics['qreg_pnl_hold_q25_slope'])}  "
             f"q50={fmt_num(metrics['qreg_pnl_hold_q50_slope'])}  "
-            f"q90={fmt_num(metrics['qreg_pnl_hold_q90_slope'])}"
-        ),
-        (
-            f"QReg hold range: {fmt_num(metrics['qreg_hold_min'])} to {fmt_num(metrics['qreg_hold_max'])} min"
-            f"    samples={metrics['qreg_n']}"
+            f"q75={fmt_num(metrics['qreg_pnl_hold_q75_slope'])}"
         ),
         (
             f"QReg pnl at median hold ({fmt_num(metrics['qreg_hold_median_min'])} min): "
-            f"q10={fmt_num(metrics['qreg_pnl_hold_q10_at_median_hold'])}  "
+            f"q25={fmt_num(metrics['qreg_pnl_hold_q25_at_median_hold'])}  "
             f"q50={fmt_num(metrics['qreg_pnl_hold_q50_at_median_hold'])}  "
-            f"q90={fmt_num(metrics['qreg_pnl_hold_q90_at_median_hold'])} JPY"
+            f"q75={fmt_num(metrics['qreg_pnl_hold_q75_at_median_hold'])} JPY"
         ),
         f"Max drawdown: {fmt_num(metrics['max_drawdown'])} JPY    Best: {fmt_num(metrics['best_trade'])}    Worst: {fmt_num(metrics['worst_trade'])}",
         f"Max win streak: {metrics['max_win_streak']}    Max loss streak: {metrics['max_loss_streak']}    Trades/day: {fmt_num(metrics['trades_per_day'])}",
@@ -645,6 +626,10 @@ def make_page2_png(metrics: dict, price_label: str, tick_label: str, trades: pd.
     hold = trades["hold_minutes"].astype(float).to_numpy()
     is_win = trades["is_win"].astype(bool).to_numpy()
 
+    equity = np.cumsum(pnl)
+    peak = np.maximum.accumulate(equity)
+    dd = equity - peak
+
     fig = plt.figure(figsize=(8.27, 11.69))
     fig.suptitle("Trade Report (Page 2/2)", fontsize=14)
 
@@ -662,45 +647,19 @@ def make_page2_png(metrics: dict, price_label: str, tick_label: str, trades: pd.
     fig.subplots_adjust(left=0.08, right=0.92, bottom=0.08, top=0.70, hspace=0.35, wspace=0.25)
 
     ax1 = axs[0, 0]
-    ax1.set_title("Holding Time vs P&L (All)")
-    ax1.scatter(hold, pnl, alpha=0.7)
-    x1_min = float(np.nanmin(hold)) if len(hold) else float("nan")
-    x1_max = float(np.nanmax(hold)) if len(hold) else float("nan")
-    if np.isfinite(x1_min) and np.isfinite(x1_max) and x1_max > x1_min:
-        x1g = np.linspace(x1_min, x1_max, 100)
-        for q_label, color in [("10", "tab:green"), ("50", "tab:orange"), ("90", "tab:red")]:
-            b0 = metrics.get(f"qreg_pnl_hold_q{q_label}_intercept", float("nan"))
-            b1 = metrics.get(f"qreg_pnl_hold_q{q_label}_slope", float("nan"))
-            if np.isfinite(b0) and np.isfinite(b1):
-                ax1.plot(x1g, b0 + b1 * x1g, color=color, linewidth=1.2, label=f"q={int(q_label)/100:.2f}")
-        ax1.legend(fontsize=8, frameon=False)
-    ax1.set_ylabel("P&L (JPY)")
-    ax1.set_xlabel("Hold Time (Minutes)")
+    ax1.set_title("Drawdown")
+    ax1.plot(pd.to_datetime(trades["exit_time"]), dd)
+    ax1.set_ylabel("JPY")
     ax1.grid(True, alpha=0.3)
 
     ax2 = axs[0, 1]
-    qreg_hold_min = metrics.get("qreg_hold_min", float("nan"))
-    qreg_hold_max = metrics.get("qreg_hold_max", float("nan"))
-    mask = np.isfinite(hold) & np.isfinite(pnl)
-    if np.isfinite(qreg_hold_min):
-        mask &= hold >= qreg_hold_min
-    if np.isfinite(qreg_hold_max):
-        mask &= hold <= qreg_hold_max
-    hold_filtered = hold[mask]
-    pnl_filtered = pnl[mask]
-    range_parts = []
-    if np.isfinite(qreg_hold_min):
-        range_parts.append(f">={qreg_hold_min:.2f}")
-    if np.isfinite(qreg_hold_max):
-        range_parts.append(f"<={qreg_hold_max:.2f}")
-    range_label = "all" if not range_parts else " and ".join(range_parts)
-    ax2.set_title(f"Holding Time vs P&L (QReg Range: {range_label} min)")
-    ax2.scatter(hold_filtered, pnl_filtered, alpha=0.7)
-    x_min = float(np.nanmin(hold_filtered)) if len(hold_filtered) else float("nan")
-    x_max = float(np.nanmax(hold_filtered)) if len(hold_filtered) else float("nan")
+    ax2.set_title("Holding Time vs P&L")
+    ax2.scatter(hold, pnl, alpha=0.7)
+    x_min = float(np.nanmin(hold)) if len(hold) else float("nan")
+    x_max = float(np.nanmax(hold)) if len(hold) else float("nan")
     if np.isfinite(x_min) and np.isfinite(x_max) and x_max > x_min:
         xg = np.linspace(x_min, x_max, 100)
-        for q_label, color in [("10", "tab:green"), ("50", "tab:orange"), ("90", "tab:red")]:
+        for q_label, color in [("25", "tab:green"), ("50", "tab:orange"), ("75", "tab:red")]:
             b0 = metrics.get(f"qreg_pnl_hold_q{q_label}_intercept", float("nan"))
             b1 = metrics.get(f"qreg_pnl_hold_q{q_label}_slope", float("nan"))
             if np.isfinite(b0) and np.isfinite(b1):
@@ -753,8 +712,6 @@ def main():
     ap.add_argument("--pad_minutes", type=int, default=60)
     ap.add_argument("--max_minute_bars", type=int, default=4000)
     ap.add_argument("--max_ticks", type=int, default=60000)
-    ap.add_argument("--qreg_hold_min", type=float, default=None)
-    ap.add_argument("--qreg_hold_max", type=float, default=None)
 
     ap.add_argument("--outdir", type=str, default="out_report")
     ap.add_argument("--prefix", type=str, default="overlay_report")
@@ -762,17 +719,11 @@ def main():
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_prefix = f"{args.prefix}_{run_ts}"
 
     trades = reconstruct_trades_from_matsui(Path(args.execution_csv), encoding=args.execution_encoding)
     if args.tz:
         trades = apply_timezone_to_trades(trades, args.tz)
-    qreg_hold_min = args.qreg_hold_min
-    qreg_hold_max = args.qreg_hold_max
-    if qreg_hold_min is not None and qreg_hold_max is not None and qreg_hold_min > qreg_hold_max:
-        qreg_hold_min, qreg_hold_max = qreg_hold_max, qreg_hold_min
-    metrics = compute_metrics(trades, qreg_hold_min=qreg_hold_min, qreg_hold_max=qreg_hold_max)
+    metrics = compute_metrics(trades)
     print("metrics.corr_hold_pnl =", metrics["corr_hold_pnl"])
     # Render traded time window with optional padding
     start, end = compute_focus_window(trades, pad_minutes=args.pad_minutes)
@@ -801,17 +752,17 @@ def main():
     ticks = _downsample_df(ticks, args.max_ticks)
 
     # Save reconstructed trades
-    trades_out = outdir / f"{run_prefix}_trades.csv"
+    trades_out = outdir / f"{args.prefix}_trades.csv"
     trades.to_csv(trades_out, index=False, encoding="utf-8")
 
     # PNG pages define the exact report content
-    p1 = outdir / f"{run_prefix}_page1.png"
-    p2 = outdir / f"{run_prefix}_page2.png"
+    p1 = outdir / f"{args.prefix}_page1.png"
+    p2 = outdir / f"{args.prefix}_page2.png"
     make_page1_png(metrics, trades, candle_ohlc, ticks, price_label, tick_label, p1, start=start, end=end)
     make_page2_png(metrics, price_label, tick_label, trades, p2)
 
     # PDF == PNG pages
-    pdf_out = outdir / f"{run_prefix}.pdf"
+    pdf_out = outdir / f"{args.prefix}.pdf"
     make_pdf_from_pngs([p1, p2], pdf_out)
 
     print("OK")
