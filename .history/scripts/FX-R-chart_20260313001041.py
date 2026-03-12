@@ -10,7 +10,7 @@ python scripts/FX-R-chart.py \
   --after-minutes 30 \
   --candle-minutes 5 \
   --trades-per-page 4 \
-  --outdir out/trade_windows 
+  --outdir out/trade_windows \
 """
 
 from __future__ import annotations

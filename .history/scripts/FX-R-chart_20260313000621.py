@@ -10,7 +10,7 @@ python scripts/FX-R-chart.py \
   --after-minutes 30 \
   --candle-minutes 5 \
   --trades-per-page 4 \
-  --outdir out/trade_windows 
+  --outdir out/tra
 """
 
 from __future__ import annotations
@@ -419,28 +419,6 @@ def build_ohlc_from_ticks(ticks: pd.DataFrame, candle_minutes: int) -> pd.DataFr
     return ohlc
 
 
-def _align_timestamp_to_index(ts: pd.Timestamp, index: pd.Index | pd.Series) -> pd.Timestamp:
-    """Align timestamp tz-awareness with the reference index/dtype."""
-    if isinstance(index, pd.Series):
-        if not pd.api.types.is_datetime64_any_dtype(index.dtype):
-            return ts
-        dtype = index.dtype
-    elif isinstance(index, pd.DatetimeIndex):
-        dtype = index.dtype
-    else:
-        return ts
-
-    if isinstance(dtype, pd.DatetimeTZDtype):
-        tz = dtype.tz
-        if ts.tzinfo is None:
-            return ts.tz_localize(tz)
-        return ts.tz_convert(tz)
-
-    if ts.tzinfo is not None:
-        return ts.tz_localize(None)
-    return ts
-
-
 def build_ohlc_from_ohlc(ohlc: pd.DataFrame, candle_minutes: int) -> pd.DataFrame:
     """Resample OHLC to target candle minutes."""
     if candle_minutes <= 0:
@@ -474,14 +452,8 @@ def slice_trade_window(
     end = base_end + pd.Timedelta(minutes=after_minutes)
     warmup_start = start - pd.Timedelta(minutes=max(0, bb_window_bars) * max(1, candle_minutes))
 
-    # Align window boundaries to available index timezone/awareness to avoid mismatch during filtering.
-    start = _align_timestamp_to_index(start, ticks["_t"])
-    end = _align_timestamp_to_index(end, ticks["_t"])
-    warmup_start = _align_timestamp_to_index(warmup_start, ticks["_t"])
-    ohlc_end = _align_timestamp_to_index(end, ohlc.index)
-
     ticks_w = ticks[(ticks["_t"] >= start) & (ticks["_t"] <= end)].copy()
-    ohlc_w = ohlc[(ohlc.index >= warmup_start) & (ohlc.index <= ohlc_end)].copy()
+    ohlc_w = ohlc[(ohlc.index >= warmup_start) & (ohlc.index <= end)].copy()
     return ticks_w, ohlc_w, start, end
 
 
@@ -546,7 +518,6 @@ def _percent_b_at(ts: pd.Timestamp, bb: pd.DataFrame) -> float:
     """Get nearest %B value to timestamp."""
     if bb.empty:
         return float("nan")
-    ts = _align_timestamp_to_index(ts, bb.index)
     idx = bb.index
     i = idx.searchsorted(ts)
     if i <= 0:
@@ -587,10 +558,6 @@ def plot_single_trade_column(
             ax.set_xlim(start, end)
             ax.grid(True, alpha=0.2)
         return False
-    
-    ref_axis = ohlc_w.index if not ohlc_w.empty else ticks_w["_t"]
-    _entry_t_aligned = _align_timestamp_to_index(entry_t, ref_axis)
-    _exit_t_aligned = _align_timestamp_to_index(exit_t, ref_axis)
 
     if not ohlc_w.empty:
         _draw_candles(ax_candle, ohlc_w)
@@ -605,19 +572,19 @@ def plot_single_trade_column(
         ax_tick.plot(ticks_w["_t"], ticks_w["_p"], color="tab:blue", linewidth=0.9)
 
     # Buy/Sell markers by side: BUY=up, SELL=down.
-    ax_candle.scatter([_entry_t_aligned], [entry_p], s=38, c="red", marker=entry_marker, zorder=5)
-    ax_tick.scatter([_entry_t_aligned], [entry_p], s=38, c="red", marker=entry_marker, zorder=5, label=f"Entry {entry_side}")
+    ax_candle.scatter([entry_t], [entry_p], s=38, c="red", marker=entry_marker, zorder=5)
+    ax_tick.scatter([entry_t], [entry_p], s=38, c="red", marker=entry_marker, zorder=5, label=f"Entry {entry_side}")
 
-    ax_candle.scatter([_exit_t_aligned], [exit_p], s=40, c="tab:orange", marker=exit_marker, zorder=6)
-    ax_tick.scatter([_exit_t_aligned], [exit_p], s=40, c="tab:orange", marker=exit_marker, zorder=6)
+    ax_candle.scatter([exit_t], [exit_p], s=40, c="tab:orange", marker=exit_marker, zorder=6)
+    ax_tick.scatter([exit_t], [exit_p], s=40, c="tab:orange", marker=exit_marker, zorder=6)
 
-    entry_pb = _percent_b_at(_entry_t_aligned, bb)
-    exit_pb = _percent_b_at(_exit_t_aligned, bb)
-    entry_txt = f"ENTRY {entry_side} {_entry_t_aligned.strftime('%H:%M:%S')} {entry_p:.3f}  %B={entry_pb:.3f}"
-    exit_txt = f"EXIT {exit_side} {_exit_t_aligned.strftime('%H:%M:%S')} {exit_p:.3f}  %B={exit_pb:.3f}"
+    entry_pb = _percent_b_at(entry_t, bb)
+    exit_pb = _percent_b_at(exit_t, bb)
+    entry_txt = f"ENTRY {entry_side} {entry_t.strftime('%H:%M:%S')} {entry_p:.3f}  %B={entry_pb:.3f}"
+    exit_txt = f"EXIT {exit_side} {exit_t.strftime('%H:%M:%S')} {exit_p:.3f}  %B={exit_pb:.3f}"
     ax_candle.annotate(
         f"%B={entry_pb:.3f}",
-        xy=(_entry_t_aligned, entry_p),
+        xy=(entry_t, entry_p),
         xytext=(4, 10),
         textcoords="offset points",
         fontsize=7,
@@ -625,7 +592,7 @@ def plot_single_trade_column(
     )
     ax_candle.annotate(
         f"%B={exit_pb:.3f}",
-        xy=(_exit_t_aligned, exit_p),
+        xy=(exit_t, exit_p),
         xytext=(4, 10),
         textcoords="offset points",
         fontsize=7,
@@ -633,7 +600,7 @@ def plot_single_trade_column(
     )
     ax_tick.annotate(
         entry_txt,
-        xy=(_entry_t_aligned, entry_p),
+        xy=(entry_t, entry_p),
         xytext=(4, 8),
         textcoords="offset points",
         fontsize=7,
@@ -641,7 +608,7 @@ def plot_single_trade_column(
     )
     ax_tick.annotate(
         exit_txt,
-        xy=(_exit_t_aligned, exit_p),
+        xy=(exit_t, exit_p),
         xytext=(4, 8),
         textcoords="offset points",
         fontsize=7,
