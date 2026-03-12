@@ -108,29 +108,21 @@ def generate_session_report(
         per_page = config.rows * config.cols
         for tf in timeframes:
             tf_minutes = timeframe_to_minutes(tf)
-            tf_df = df.copy()
-            # Expect pre-resampled df can be passed here; keep function generic.
-            if tf != "original":
-                # If caller passes raw data, re-resample inside report generation.
-                tf_df = (
-                    tf_df[["open", "high", "low", "close"]]
-                    .resample(f"{tf_minutes}min", label="right", closed="right")
-                    .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
-                    .dropna(subset=["open", "high", "low", "close"])
-                )
-                if "volume" in df.columns:
-                    tf_df["volume"] = tf_df["volume"].resample(f"{tf_minutes}min", label="right", closed="right").sum(
-                        min_count=1
-                    )
-            if "volume" in tf_df.columns:
-                tf_df = tf_df.dropna(subset=["open", "high", "low", "close", "volume"])
+            agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+            if "volume" in df.columns:
+                agg["volume"] = "sum"
+            tf_df = (
+                df.resample(f"{tf_minutes}min", label="right", closed="right")
+                .agg(agg)
+                .dropna(subset=["open", "high", "low", "close"])
+                .sort_index()
+            )
 
             if tf_df.empty:
                 LOGGER.warning("Skipping empty timeframe: %s", tf)
                 continue
 
-            duration = _session_minutes(config.session_start, config.session_end)
-            title_tf = f"Timeframe={tf}分"
+            title_tf = f"Timeframe={tf}min"
 
             for page_idx, date_block in enumerate(_split_chunks(dates, per_page), start=1):
                 fig, axs = plt.subplots(
@@ -167,12 +159,12 @@ def generate_session_report(
                         fixed_ylim=config.fixed_ylim,
                         show_xlabels=is_bottom,
                     )
-                    axis.set_xlabel("時間" if is_bottom else "")
+                    axis.set_xlabel("Time" if is_bottom else "")
 
                     if not day_df.empty:
                         axis.set_title(
-                            f"{day}  (高:{day_df['high'].max():.5f}  安:{day_df['low'].min():.5f}  "
-                            f"始:{day_df['open'].iloc[0]:.5f}  終:{day_df['close'].iloc[-1]:.5f})",
+                            f"{day}  (H:{day_df['high'].max():.5f}  L:{day_df['low'].min():.5f}  "
+                            f"O:{day_df['open'].iloc[0]:.5f}  C:{day_df['close'].iloc[-1]:.5f})",
                             fontsize=8,
                         )
                 plt.tight_layout(rect=[0.0, 0.02, 1.0, 0.96])

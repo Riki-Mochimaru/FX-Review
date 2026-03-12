@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 import pandas as pd
+import yfinance as yf
 
 from loader import load_ohlcv_csv
 from pdf_report import ReportConfig, generate_session_report
@@ -74,8 +75,9 @@ def resolve_dates(
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Generate daily session comparison PDF.")
-    ap.add_argument("--input", required=True, help="Path of OHLCV CSV")
-    ap.add_argument("--symbol", default=None, help="Filter symbol/pair")
+    ap.add_argument("--input", default=None, help="Path of OHLCV CSV (optional when using yfinance)")
+    ap.add_argument("--symbol", default=None, help="Display symbol/pair name")
+    ap.add_argument("--ticker", default=None, help="yfinance ticker (ex: JPY=X, EURUSD=X)")
     ap.add_argument("--start-date", default=None, help="Range start date YYYY-MM-DD")
     ap.add_argument("--end-date", default=None, help="Range end date YYYY-MM-DD")
     ap.add_argument("--days", type=int, default=None, help="Number of business days to use")
@@ -102,6 +104,90 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+def _to_utc_naive(ts: pd.Timestamp) -> datetime:
+    if ts.tzinfo is None:
+        return ts.to_pydatetime()
+    return ts.tz_convert("UTC").tz_localize(None).to_pydatetime()
+
+
+def _resolve_fetch_window(
+    dates: Sequence[date],
+    session_start: time,
+    session_end: time,
+    timezone: Optional[str],
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    d0 = min(dates)
+    d1 = max(dates)
+    start = pd.Timestamp(datetime.combine(d0, session_start))
+    end = pd.Timestamp(datetime.combine(d1, session_end))
+    if session_end <= session_start:
+        end = end + pd.Timedelta(days=1)
+    # Small margins to avoid endpoint truncation by provider.
+    start = start - pd.Timedelta(minutes=10)
+    end = end + pd.Timedelta(minutes=10)
+    if timezone:
+        start = start.tz_localize(timezone)
+        end = end.tz_localize(timezone)
+    return start, end
+
+
+def fetch_ohlcv_yfinance(
+    ticker: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    timezone: Optional[str],
+) -> pd.DataFrame:
+    """Fetch OHLCV from yfinance. Try 1m first, fallback to 5m on empty/failure."""
+    start_dt = _to_utc_naive(start)
+    end_dt = _to_utc_naive(end)
+    interval = "1m"
+    raw = pd.DataFrame()
+    for cand in ("1m", "5m"):
+        try:
+            raw = yf.download(
+                tickers=ticker,
+                start=start_dt,
+                end=end_dt,
+                interval=cand,
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+            )
+            if not raw.empty:
+                interval = cand
+                break
+        except Exception:
+            continue
+    if raw.empty:
+        raise ValueError(f"Failed to fetch yfinance data for ticker={ticker} in range {start}..{end}")
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+
+    col_map = {"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
+    out = raw.rename(columns=col_map).copy()
+    keep = [c for c in ("open", "high", "low", "close", "volume") if c in out.columns]
+    out = out[keep]
+    out.index = pd.to_datetime(out.index, errors="coerce")
+    out = out.dropna(subset=["open", "high", "low", "close"]).sort_index()
+
+    if timezone:
+        if out.index.tz is None:
+            out.index = out.index.tz_localize("UTC").tz_convert(timezone)
+        else:
+            out.index = out.index.tz_convert(timezone)
+
+    LOGGER.info(
+        "Loaded yfinance rows=%s ticker=%s interval=%s range=%s..%s",
+        len(out),
+        ticker,
+        interval,
+        out.index.min(),
+        out.index.max(),
+    )
+    return out
+
+
 def _run(args: argparse.Namespace) -> int:
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
     dates = resolve_dates(args.start_date, args.end_date, args.days, args.dates)
@@ -111,20 +197,29 @@ def _run(args: argparse.Namespace) -> int:
     if any(d is None for d in dates):
         raise ValueError("Some selected dates are invalid.")
 
-    df = load_ohlcv_csv(
-        args.input,
-        symbol=args.symbol,
-        timezone=args.timezone,
-    )
+    session_start = _to_time(args.session_start)
+    session_end = _to_time(args.session_end)
+
+    if args.input:
+        df = load_ohlcv_csv(
+            args.input,
+            symbol=args.symbol,
+            timezone=args.timezone,
+        )
+    else:
+        ticker = args.ticker or args.symbol or "JPY=X"
+        start, end = _resolve_fetch_window(dates, session_start, session_end, args.timezone)
+        df = fetch_ohlcv_yfinance(ticker=ticker, start=start, end=end, timezone=args.timezone)
+        if args.symbol is None:
+            args.symbol = ticker
 
     if df.empty:
         raise ValueError("Input data is empty after filtering.")
 
-    # Keep original timezone; timezone mismatch handled at data slice step.
     config = ReportConfig(
         symbol=args.symbol,
-        session_start=_to_time(args.session_start),
-        session_end=_to_time(args.session_end),
+        session_start=session_start,
+        session_end=session_end,
         rows=args.rows,
         cols=args.cols,
         show_volume=args.show_volume,

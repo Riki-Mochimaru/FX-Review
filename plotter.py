@@ -6,7 +6,6 @@ import logging
 from datetime import time
 from typing import Dict, Optional, Tuple
 
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -61,9 +60,9 @@ def _format_session_minute(x: float, pos: object, start: time) -> str:  # noqa: 
 
 def _format_ohlc_stat(stat: Dict[str, float]) -> str:
     return (
-        f"日付: {stat['date']}  始値: {stat['open']:.5f}  "
-        f"高値: {stat['high']:.5f}  安値: {stat['low']:.5f}  "
-        f"終値: {stat['close']:.5f}  リターン: {stat['ret']:+.2f}%"
+        f"Date: {stat['date']}  Open: {stat['open']:.5f}  "
+        f"High: {stat['high']:.5f}  Low: {stat['low']:.5f}  "
+        f"Close: {stat['close']:.5f}  Return: {stat['ret']:+.2f}%"
     )
 
 
@@ -114,7 +113,7 @@ def draw_candles(ax: plt.Axes, df: pd.DataFrame, bar_minutes: int) -> None:
         ax.add_patch(rect)
 
 
-def draw_volume(ax: plt.Axes, df: plt.Axes, bar_minutes: int, scale: float = 0.4) -> None:
+def draw_volume(ax: plt.Axes, df: pd.DataFrame, bar_minutes: int, scale: float = 0.4) -> None:
     if df.empty or "volume" not in df.columns:
         return
     if "offset_min" not in df.columns:
@@ -122,7 +121,7 @@ def draw_volume(ax: plt.Axes, df: plt.Axes, bar_minutes: int, scale: float = 0.4
     vol_ax = ax.twinx()
     x = df["offset_min"].to_numpy(dtype=float)
     v = df["volume"].to_numpy(dtype=float)
-    v = np.nan_to_num(v, nan=0.0, nan=0.0)
+    v = np.nan_to_num(v, nan=0.0)
     width = max(bar_minutes * 0.6, 0.1)
     vol_ax.bar(x, v, width=width, alpha=0.35, color="tab:blue", align="center")
     max_v = float(np.nanmax(v))
@@ -141,7 +140,7 @@ def apply_shared_x_axis_style(ax: plt.Axes, session_start: time, duration: int, 
     ax.xaxis.set_major_locator(mticker.MultipleLocator(major))
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, p: _format_session_minute(v, p, session_start)))
     if show_labels:
-        ax.set_xlabel("時刻", fontsize=8)
+        ax.set_xlabel("Time", fontsize=8)
     else:
         ax.tick_params(axis="x", labelbottom=False)
     ax.tick_params(axis="x", labelsize=8)
@@ -162,7 +161,7 @@ def add_day_panel(
     duration = _session_minutes(session_start, session_end)
 
     if df.empty:
-        ax.text(0.5, 0.5, "データなし", ha="center", va="center", fontsize=12)
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=12)
         apply_shared_x_axis_style(ax, session_start, duration, show_xlabels)
         ax.set_title(date_label, fontsize=9)
         return
@@ -175,7 +174,7 @@ def add_day_panel(
 
     draw_candles(ax, df, bar_min)
     stats = compute_session_stats(df, date_label)
-    ax.set_title(f"{stats['date']} | リターン {stats['ret']:+.2f}%")
+    ax.set_title(f"{stats['date']} | Return {stats['ret']:+.2f}%")
     ax.text(
         0.01,
         0.98,

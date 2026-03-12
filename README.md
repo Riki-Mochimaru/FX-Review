@@ -1,244 +1,117 @@
-diff --git a//Users/Public/Documents/FX-Review/README.md b//Users/Public/Documents/FX-Review/README.md
-deleted file mode 100644
---- a//Users/Public/Documents/FX-Review/README.md
-+++ /dev/null
-@@ -1,140 +0,0 @@
--# FX-R-matsui.py 使用方法
--
--## 概要
--`FX-R-matsui.py` は、松井証券の約定履歴CSVから、以下を出力します。
--
--- 取引再構成CSV（FIFOで新規/決済を対応付け）
--- 2ページ分のレポートPNG
--- 上記PNGを貼り込んだPDF
--
--Page1のローソク足は `yfinance` の `JPY=X`（1m優先、失敗時5m）を使用します。  
--yfinance取得に失敗した場合は、失敗メッセージを表示して終了します（`minute_csv` フォールバックはありません）。  
--Page2のtickチャートは yfinanceのclose から擬似tickを生成して描画します。
--
--## 事前準備
--1. 依存パッケージをインストール
--
--```bash
--pip install -r requirements.txt
--```
--
--2. 入力CSVを用意
--- 約定履歴CSV（松井証券の約定一覧）
--
--## 実行コマンド
--
--```bash
--python3 scripts/FX-R-matsui.py \
--  --execution_csv data/execution_list_20260313004511.csv \
--  --execution_encoding CP932 \
--  --tz Asia/Tokyo \
--  --pad_minutes 120 \
--  --max_minute_bars 4000 \
--  --max_ticks 60000 \
--  --outdir out \
--  --prefix Review \
--  --qreg_hold_min 0 \
--  --qreg_hold_max 1　
--```
--
--## 主な引数
--- `--execution_csv` (必須): 約定履歴CSVのパス
--- `--execution_encoding` (任意, 既定 `UTF-8`): 約定履歴CSVの文字コード
--- `--tz` (任意): タイムゾーン（例 `Asia/Tokyo`）
--- `--pad_minutes` (任意, 既定 `60`): 最初/最後のトレード時刻の前後に追加する表示余白（分）
--- `--max_minute_bars` (任意, 既定 `4000`): 描画時の分足ダウンサンプル上限
--- `--max_ticks` (任意, 既定 `60000`): 描画時のtickダウンサンプル上限
--- `--outdir` (任意, 既定 `out_report`): 出力先ディレクトリ
--- `--prefix` (任意, 既定 `overlay_report`): 出力ファイル接頭辞
--
--## 出力ファイル
--`--outdir` 配下に以下が作成されます。
--
--- `{prefix}.pdf`
--- `{prefix}_page1.png`
--- `{prefix}_page2.png`
--- `{prefix}_trades.csv`
--
--## 注意点
--- 約定履歴CSVには少なくとも以下列が必要です。  
--  `通貨ペア`, `売買`, `取引区分`, `数量`, `約定価格`, `約定日時`
--- 損益列は `受渡金額` を優先し、なければ `建玉損益(円)`（+ `スワップ` があれば加算）を使用します。
--- グラフの時間範囲は「最初のトレード時刻 - `pad_minutes`」から「最後のトレード時刻 + `pad_minutes`」です。
--
--## 追加したい機能
--- ~~勝ったトレードと、負けたトレードの保有時間の相関関係を求める。可視化もする。~~
--- ~~pnl,hold time間の分位点回帰を追加する~~
--- トレードの改善案を定量的に提示する。(保有時間、ロット、損切り幅など)
--
--
--# scripts/plot_trade_windows.py 使用方法
--
--## 概要
--`scripts/plot_trade_windows.py` は、トレード履歴CSVの各トレードについて、前後n分の値動きを以下2段で横並び可視化します。
--
--- 上段: m分足ローソク足
--- 下段: tick推移
--
--各列が1トレードです。  
--新規建は赤マーカー、決済は方向別マーカー（買い:上矢印 / 売り:下矢印）で表示します。  
--データ取得は `--ticks` 指定時はtick CSV、未指定時は `yfinance`（既定 `JPY=X`）を使用します。
--
--## 実行コマンド
--
--### 1) yfinanceを使う場合（既定）
--```bash
--python3 scripts/FX-R-chart.py \
--  --trades data/execution_list_20260313004511.csv \
--  --ticker JPY=X \
--  --before-minutes 30 \
--  --after-minutes 30 \
--  --candle-minutes 5 \
--  --trades-per-page 4 \
--  --tz Asia/Tokyo \
--  --outdir out/trade_windows \
--  --prefix trade_windows
--```
--
--### 2) tick CSVを使う場合
--```bash
--python3 scripts/FX-chart.py \
--  --trades out/Review_20260306_015116_trades.csv \
--  --ticks data/barData.csv \
--  --before-minutes 30 \
--  --after-minutes 30 \
--  --candle-minutes 5 \
--  --trades-per-page 4 \
--  --tz Asia/Tokyo \
--  --outdir data/execution_list_20260306014736.csv \
--  --prefix trade_windows
--```
--
--## 主な引数
--- `--trades` (必須): トレード履歴CSVのパス
--- `--ticks` (任意): tick CSVのパス。未指定時は yfinance を使用
--- `--ticker` (任意, 既定 `JPY=X`): yfinanceのティッカー
--- `--before-minutes` (任意, 既定 `30`): 表示開始側の余白（分）
--- `--after-minutes` (任意, 既定 `30`): 表示終了側の余白（分）
--- `--window-minutes` (任意): 指定時は before/after を同値で上書き
--- `--candle-minutes` (任意, 既定 `5`): ローソク足の分足
--- `--trades-per-page` (任意, 既定 `4`): 1ページに並べるトレード数
--- `--start` / `--end` (任意): 描画対象トレードの期間フィルタ
--- `--limit` (任意): 先頭から描画する件数
--- `--outdir` (任意, 既定 `out/trade_windows`): 出力先
--- `--prefix` (任意, 既定 `trade_windows`): 出力ファイル接頭辞
--- `--tz` (任意): タイムゾーン（例 `Asia/Tokyo`）
--
--## 出力ファイル
--`--outdir` 配下に以下が作成されます（実行時刻付き）。
--
--- `{prefix}_{YYYYMMDD_HHMMSS}_page01.png`（ページ数に応じて連番）
--- `{prefix}_{YYYYMMDD_HHMMSS}.pdf`
--
--## 対応CSV
--- `out/..._trades.csv` のような再構成済みトレードCSV
--- 松井証券の約定一覧CSV（`通貨ペア`, `売買`, `取引区分`, `数量`, `約定価格`, `約定日時` を使用して再構成）
--
--## 注意点
--- `--ticks` 未指定時は yfinance 取得が必要です（ネットワーク必須）。
--- yfinance取得時のtickは `close` から作る擬似tickです。
--- トレード窓内に価格データが無い場合、その列は警告表示してスキップ扱いになります。
-
 # Daily Session OHLCV Comparison Report
 
-FX/CFDのOHLCV時系列データから、指定した通貨ペアの「同一時間帯」を
-日付ごとに比較するPDFレポートを作成するツールです。
+Generate a PDF report that compares the same intraday session across multiple days for FX/CFD data.
 
-- 1日ごとに同一時間帯の価格推移を小サブプロット化
-- 複数時間足（例：1/5/15分）をまとめて表示
-- 欠損日を「データなし」として扱い、処理を継続
-- PDF出力（A4 縦/横対応）
+- Works directly with `yfinance` (CSV is optional)
+- Supports multiple timeframes per run (e.g. `1 5 15`)
+- Handles missing-session days without crashing
+- A4 portrait/landscape output with subplot grid
 
-## ファイル構成
+## Files
 
-- `main.py`: CLIエントリポイント
-- `loader.py`: CSV読み込み・文字コード判定・前処理
-- `resample.py`: 分足リサンプリング
-- `plotter.py`: 日次サブプロット描画（ローソク足・ラベル・指標）
-- `pdf_report.py`: 日付×時間足のページングとPDF保存
-- `requirements.txt`: 依存パッケージ
+- `main.py`: CLI entrypoint
+- `loader.py`: CSV loading and encoding detection
+- `resample.py`: timeframe conversion helpers
+- `plotter.py`: candlestick/session panel drawing
+- `pdf_report.py`: page composition and PDF export
+- `requirements.txt`: dependencies
 
-## 想定CSV形式
+## Expected CSV Format (Optional Input Mode)
 
-少なくとも以下の列を含むものを想定します（列名は候補名から自動判定）。
+If you use `--input`, the CSV should include at least:
 
-- 時刻: `datetime`, `time`, `timestamp`, `date`, `約定日時`, `日時`
-- 始値: `open`, `O`, `始値`
-- 高値: `high`, `H`, `高値`
-- 安値: `low`, `L`, `安値`
-- 終値: `close`, `C`, `終値`
-- 出来高（任意）: `volume`, `v`, `出来高`
-- 通貨ペア（任意で `--symbol` 指定時に使用）:
-  `symbol`, `ticker`, `pair`, `currency_pair`, `通貨ペア`
+- `datetime` (or `time`, `timestamp`, `date`; Japanese datetime column aliases are also supported)
+- `open`
+- `high`
+- `low`
+- `close`
+- `volume` is optional
 
-文字コードは自動で試行されます（UTF-8/CP932/Shift_JIS など）。
+Encoding is auto-detected (`UTF-8`, `CP932`, `Shift_JIS`, etc.).
 
-## 使い方
+## Usage
 
-```bash
-python main.py --input data/ohlcv.csv --symbol USDJPY --start-date 2026-02-01 --end-date 2026-03-01 \
-  --session-start 09:00 --session-end 10:30 --timeframes 1 5 15 --days 20 --rows 2 --cols 2 \
-  --timezone Asia/Tokyo --show-volume --output out/session_report.pdf
-```
-
-明示日付指定モード:
+### 1) yfinance only (no CSV)
 
 ```bash
-python main.py --input data/ohlcv.csv --dates 2026-03-01 2026-03-05 2026-03-06 \
-  --timeframes 1 5 15 --session-start 09:00 --session-end 10:30
+python main.py \
+  --ticker JPY=X \
+  --days 20 \
+  --session-start 09:00 \
+  --session-end 10:30 \
+  --timeframes 1 5 15 \
+  --timezone Asia/Tokyo \
+  --rows 2 \
+  --cols 2 \
+  --show-volume \
+  --output out/session_report.pdf
 ```
 
-## 主な引数
-
-- `--input`: 入力CSVパス（必須）
-- `--symbol`: 通貨ペア/シンボルを指定してフィルタ
-- `--start-date`: 開始日 (YYYY-MM-DD)
-- `--end-date`: 終了日 (YYYY-MM-DD)
-- `--days`: 直近N営業日を自動展開
-- `--dates`: 日付を明示指定する場合（例: `2026-03-01 2026-03-02`）
-- `--session-start`: 比較開始時刻（例: `09:00`）
-- `--session-end`: 比較終了時刻（例: `10:30`）
-- `--timeframes`: 時間足（例: `1 5 15`）
-- `--timezone`: タイムゾーン（例: `Asia/Tokyo`）
-- `--output`: PDF出力先
-- `--rows`, `--cols`: 1ページ内のサブプロット行列
-- `--show-volume`: 出来高バーを表示
-- `--style`: Matplotlibスタイル名
-- `--orientation`: `portrait` / `landscape`
-- `--fixed-ymin`, `--fixed-ymax`: 固定Y軸を使う場合
-
-## 実行例
-
-1) 過去20営業日、デフォルト時間帯を比較
+### 2) Cross-midnight session (e.g. 21:00 to 01:00)
 
 ```bash
-python main.py --input data/USDJPY_1min.csv --symbol USDJPY --days 20
+python main.py \
+  --ticker JPY=X \
+  --days 20 \
+  --session-start 21:00 \
+  --session-end 01:00 \
+  --timeframes 1 5 15 \
+  --timezone Asia/Tokyo \
+  --output out/session_report_night.pdf
 ```
 
-2) 開始～終了日を指定し、5分・15分足のみ出力
+### 3) CSV input mode
 
 ```bash
-python main.py --input data/USDJPY_1min.csv --symbol USDJPY \
-  --start-date 2026-02-01 --end-date 2026-02-15 --timeframes 5 15 \
-  --session-start 09:00 --session-end 11:30 --rows 3 --cols 2 --show-volume
+python main.py \
+  --input data/ohlcv.csv \
+  --symbol USDJPY \
+  --start-date 2026-02-01 \
+  --end-date 2026-03-01 \
+  --session-start 09:00 \
+  --session-end 10:30 \
+  --timeframes 1 5 15 \
+  --timezone Asia/Tokyo \
+  --output out/session_report.pdf
 ```
 
-## 注意点
+### 4) Explicit date list mode
 
-- CSVの時刻列はタイムゾーン付き/なしどちらも扱います。`--timezone` が指定された場合、時刻列をその基準で揃えます。
-- 時間帯が夜をまたぐ（例: 22:00-01:00）場合でも比較できるように、24時間またぎを許容します。
-- 指定時間帯に該当データがない日は「データなし」と表示します。
-- 欠損値や空行がある行は除外対象になりますが、処理自体は継続します。
-- 通貨ペア列がないCSVで `--symbol` を指定した場合はエラーになります。
+```bash
+python main.py \
+  --ticker EURUSD=X \
+  --dates 2026-03-01 2026-03-05 2026-03-06 \
+  --session-start 09:00 \
+  --session-end 10:30 \
+  --timeframes 1 5 15
+```
 
-## 拡張案
+## Key Arguments
 
-- エントリー・決済ポイントの重ね描きを `plotter.py` の `add_day_panel` に追加
-- 各日の時間帯リターン分布の追加（PDF別セクション）
-- 時間帯平均パス（time-aligned平均線）の追加
-- 価格軸を「日跨ぎ固定」「全時間足固定」に拡張
+- `--input`: optional CSV path
+- `--ticker`: yfinance ticker when `--input` is omitted
+- `--symbol`: display symbol name
+- `--start-date`, `--end-date`: date range
+- `--days`: last N business days
+- `--dates`: explicit date list
+- `--session-start`, `--session-end`: session time window
+- `--timeframes`: list of minute timeframes
+- `--timezone`: timezone (e.g. `Asia/Tokyo`)
+- `--output`: output PDF path
+- `--rows`, `--cols`: subplot layout per page
+- `--show-volume`: overlay volume bars
+- `--style`: matplotlib style
+- `--orientation`: `portrait` or `landscape`
+- `--fixed-ymin`, `--fixed-ymax`: fixed y-axis scale
+
+## Notes
+
+- yfinance 1-minute history has period limits; fallback to `5m` is implemented.
+- Days with no data in the target session are rendered as `No data`.
+- Cross-midnight sessions are supported (e.g. `22:00` to `01:00`).
+
+## Extension Ideas
+
+- Overlay entry/exit points on each day panel
+- Add return-distribution summary pages
+- Add average intraday path per session
